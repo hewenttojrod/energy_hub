@@ -1,14 +1,14 @@
 /**
- * module_template module entry point.
- * Exports routes for all module_template pages and the navigation sidebar item.
+ * energy_hub module entry point.
+ * Exports routes for all energy_hub pages and the navigation sidebar item.
  * 
  * Routes:
- *    module_template/home - home
+ *    energy_hub/home - home
  */
 
 import type { SidebarNavItem, ModuleRoute } from "@app-types/navigation";
 
-export const base_route = "/module_template";
+export const base_route = "/energy_hub";
 
 export const routes: ModuleRoute[] = [
   { 
@@ -18,13 +18,13 @@ export const routes: ModuleRoute[] = [
 ];
 
 export const navItem: SidebarNavItem = {
-  id: "module-template-home",
-  title: "Module Template",
+  id: "energy-hub-home",
+  title: "Energy Hub",
   section: "module",
   order: -1,
   children: [
     { 
-      id: "module-template-home", 
+      id: "energy-hub-home", 
       title: "Home", 
       path: base_route, 
       section: "module", 

@@ -1,7 +1,7 @@
 from django.apps import AppConfig
 
 
-class ModuleTemplateConfig(AppConfig):
+class EnergyHubConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
-    name = "module_template.server"
-    label = "module_template"
+    name = "energy_hub.server"
+    label = "energy_hub"
