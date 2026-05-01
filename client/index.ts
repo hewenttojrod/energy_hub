@@ -15,6 +15,10 @@ export const routes: ModuleRoute[] = [
     path: base_route, 
     load: () => import("./home") 
   },
+  {
+    path: `${base_route}/reports`,
+    load: () => import("./reports/report_list"),
+  },
 ];
 
 export const navItem: SidebarNavItem = {
@@ -29,6 +33,13 @@ export const navItem: SidebarNavItem = {
       path: base_route, 
       section: "module", 
       order: -2 
+    },
+    {
+      id: "energy-hub-reports",
+      title: "Reports",
+      path: `${base_route}/reports`,
+      section: "module",
+      order: -1,
     },
   ]
 };

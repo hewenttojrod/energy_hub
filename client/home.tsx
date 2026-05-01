@@ -8,8 +8,22 @@ import FormBody from "@templates/form-body";
 export default function EnergyHubHome() {
   return (
     <FormBody title="Energy Hub">
-      <p className="text-sm text-slate-600 dark:text-slate-300">
-        Test text
+      <p className="body-text">
+        Pulling in NYISO data for testing <br/> 
+        <br/>
+        useful links: <br/>
+        <div>
+          NYISO: < br/>
+          <div>
+            - <a className="underline" href="https://www.nyiso.com/real-time-dashboard" >Real time dash</a><br/>
+            - <a className="underline" href="https://mis.nyiso.com/public/">Public data</a><br/>
+          </div>
+          <br/>
+        </div>
+        <div>
+          <br/>
+          <a className="underline" href="https://github.com/m4rz910/NYISOToolkit/tree/master">NYISOToolkit</a>
+        </div>
       </p>
     </FormBody>
   );
