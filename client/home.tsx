@@ -15,14 +15,14 @@ export default function EnergyHubHome() {
         <div>
           NYISO: < br/>
           <div>
-            - <a className="underline" href="https://www.nyiso.com/real-time-dashboard" >Real time dash</a><br/>
-            - <a className="underline" href="https://mis.nyiso.com/public/">Public data</a><br/>
+            - <a className="hyperlink" href="https://www.nyiso.com/real-time-dashboard" target="_blank" rel="noopener noreferrer">Real time dash</a><br/>
+            - <a className="hyperlink" href="https://mis.nyiso.com/public/" target="_blank" rel="noopener noreferrer">Public data</a><br/>
           </div>
           <br/>
         </div>
         <div>
           <br/>
-          <a className="underline" href="https://github.com/m4rz910/NYISOToolkit/tree/master">NYISOToolkit</a>
+          <a className="hyperlink" href="https://github.com/m4rz910/NYISOToolkit/tree/master" target="_blank" rel="noopener noreferrer">NYISOToolkit</a>
         </div>
       </p>
     </FormBody>
