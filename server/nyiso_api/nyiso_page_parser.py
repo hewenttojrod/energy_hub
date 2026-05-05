@@ -173,27 +173,29 @@ def _format_date_value(raw: str, style: str) -> str:
     if not cleaned:
         return ""
 
-    parse_formats = [
-        "%m-%d-%Y",
-        "%Y-%m-%d",
-        "%m/%d/%Y",
-        "%Y/%m/%d",
-        "%Y%m%d",
-        "%m%d%Y",
-    ]
     parsed_dt: datetime | None = None
-    for fmt in parse_formats:
-        try:
-            parsed_dt = datetime.strptime(cleaned, fmt)
-            break
-        except ValueError:
-            continue
+    try:
+        parsed_dt = datetime.fromisoformat(cleaned)
+    except ValueError:
+        parse_formats = [
+            "%m-%d-%Y",
+            "%m/%d/%Y",
+            "%Y/%m/%d",
+            "%Y%m%d",
+            "%m%d%Y",
+        ]
+        for fmt in parse_formats:
+            try:
+                parsed_dt = datetime.strptime(cleaned, fmt)
+                break
+            except ValueError:
+                continue
 
     if parsed_dt is None:
         return cleaned
 
     output_formats = {
-        "date": "%m-%d-%Y",
+        "date": "%Y%m%d",
         "date_yyyymmdd": "%Y%m%d",
         "date_mmddyyyy": "%m%d%Y",
         "date_mm-dd-yyyy": "%m-%d-%Y",
@@ -221,6 +223,14 @@ def build_file_name_candidates(
     if not templates:
         return []
 
+    date_values = {
+        "date": _format_date_value(date_seed, "date"),
+        "date_yyyymmdd": _format_date_value(date_seed, "date_yyyymmdd"),
+        "date_mmddyyyy": _format_date_value(date_seed, "date_mmddyyyy"),
+        "date_mm-dd-yyyy": _format_date_value(date_seed, "date_mm-dd-yyyy"),
+        "date_yyyy-mm-dd": _format_date_value(date_seed, "date_yyyy-mm-dd"),
+    }
+
     candidates: list[str] = []
     seen: set[str] = set()
     for template in templates:
@@ -230,11 +240,7 @@ def build_file_name_candidates(
                 "code": report_seed,
                 "fileextension": ext,
                 "fileextention": ext,
-                "date": _format_date_value(date_seed, "date"),
-                "date_yyyymmdd": _format_date_value(date_seed, "date_yyyymmdd"),
-                "date_mmddyyyy": _format_date_value(date_seed, "date_mmddyyyy"),
-                "date_mm-dd-yyyy": _format_date_value(date_seed, "date_mm-dd-yyyy"),
-                "date_yyyy-mm-dd": _format_date_value(date_seed, "date_yyyy-mm-dd"),
+                **date_values,
             }
             rendered = template
             for key, value in replacements.items():
@@ -253,6 +259,26 @@ def build_file_name_candidates(
 
 def resolve_download_href(index_html: str, file_name_candidates: list[str]) -> str | None:
     """Return the first matching href from report page anchors for provided filenames."""
+    href_index = build_download_href_index(index_html)
+    return resolve_download_href_from_index(href_index, file_name_candidates)
+
+
+def build_download_href_index(index_html: str) -> dict[str, str]:
+    """Build anchor lookup map keyed by filename (lower-cased basename)."""
+    href_index: dict[str, str] = {}
+
+    for href, label in _iter_anchor_pairs(index_html):
+        for value in (href, label):
+            base = Path((value or "").split("?", maxsplit=1)[0]).name.lower()
+            if not base or base in href_index:
+                continue
+            href_index[base] = href
+
+    return href_index
+
+
+def resolve_download_href_from_index(href_index: dict[str, str], file_name_candidates: list[str]) -> str | None:
+    """Resolve href using a prebuilt filename->href index."""
     if not file_name_candidates:
         return None
 
@@ -260,13 +286,9 @@ def resolve_download_href(index_html: str, file_name_candidates: list[str]) -> s
     if not candidate_set:
         return None
 
-    for href, label in _iter_anchor_pairs(index_html):
-        for value in (href, label):
-            base = Path((value or "").split("?", maxsplit=1)[0]).name.lower()
-            if not base:
-                continue
-            if base in candidate_set:
-                return href
+    for base, href in href_index.items():
+        if base in candidate_set:
+            return href
 
     return None
 

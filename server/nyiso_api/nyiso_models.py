@@ -2,9 +2,11 @@ from datetime import datetime, timedelta, timezone as dt_timezone
 
 from core._models.base_model import BaseModel
 from django.apps import apps
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 from django.contrib.postgres.fields import ArrayField
+from core.models import schedule_definition, source_file, column_mapping, timeseries_point
 
 class nyiso_report(BaseModel):
     '''
@@ -214,3 +216,100 @@ class nyiso_report(BaseModel):
         elif self.latest_report_stamp is not None:
             self.set_deprecation_from_latest(self.latest_report_stamp)
         return super().save(*args, **kwargs)
+
+
+class nyiso_schedule_definition(schedule_definition):
+    """Energy Hub proxy over core schedule_definition with module-specific validation."""
+
+    class schedule_mode(models.TextChoices):
+        METADATA_REFRESH = "METADATA_REFRESH", "Metadata Refresh"
+        FILE_DOWNLOAD_RANGE = "FILE_DOWNLOAD_RANGE", "File Download Range"
+
+    class Meta:
+        proxy = True
+        app_label = "energy_hub"
+
+    def clean(self):
+        errors: dict[str, str] = {}
+
+        self.module_name = "energy_hub"
+        self.name = (self.name or "").strip()
+        if not self.name:
+            errors["name"] = "Schedule name is required."
+
+        normalized_mode = (self.mode or self.schedule_mode.METADATA_REFRESH).strip().upper()
+        self.mode = normalized_mode
+        valid_modes = {self.schedule_mode.METADATA_REFRESH, self.schedule_mode.FILE_DOWNLOAD_RANGE}
+        if normalized_mode not in valid_modes:
+            errors["mode"] = "Mode must be METADATA_REFRESH or FILE_DOWNLOAD_RANGE."
+
+        if self.interval_minutes is None or int(self.interval_minutes) < 1:
+            errors["interval_minutes"] = "Interval must be at least 1 minute."
+
+        if self.rolling_window_days is not None and int(self.rolling_window_days) < 1:
+            errors["rolling_window_days"] = "Rolling window days must be at least 1."
+
+        if self.start_date and self.end_date and self.start_date > self.end_date:
+            errors["end_date"] = "End date must be on or after start date."
+
+        if self.target_ref_id is not None and not nyiso_report.objects.filter(nyiso_report_id=self.target_ref_id).exists():
+            errors["target_ref_id"] = "Selected report does not exist."
+
+        if normalized_mode == self.schedule_mode.FILE_DOWNLOAD_RANGE and self.target_ref_id is None:
+            errors["target_ref_id"] = "Report is required for FILE_DOWNLOAD_RANGE schedules."
+
+        if errors:
+            raise ValidationError(errors)
+
+        return super().clean()
+
+
+# ============================================================================
+# Feature Set 1 Bridge: NYISO-specific file linking
+# ============================================================================
+
+class nyiso_report_file(BaseModel):
+    """Links NYISO reports to ingested source files."""
+
+    nyiso_report = models.ForeignKey(nyiso_report, on_delete=models.CASCADE, related_name="report_files")
+    source_file = models.ForeignKey(source_file, on_delete=models.CASCADE, related_name="nyiso_reports")
+
+    class Meta:
+        unique_together = [("nyiso_report", "source_file")]
+        indexes = [
+            models.Index(fields=["nyiso_report"]),
+            models.Index(fields=["source_file"]),
+        ]
+
+    def __str__(self):
+        return f"{self.nyiso_report.code} -> {self.source_file.source_file_name}"
+
+
+# ============================================================================
+# Feature Set 2 Bridge: NYISO dimension entities (zones, nodes, interfaces, hubs)
+# ============================================================================
+
+class nyiso_dimension_entity(BaseModel):
+    """NYISO-specific dimension values (zones, nodes, interfaces, trading hubs)."""
+
+    class DimensionKind(models.TextChoices):
+        ZONE = "zone", "Zone"
+        NODE = "node", "Node"
+        INTERFACE = "interface", "Interface"
+        HUB = "hub", "Trading Hub"
+
+    dimension_kind = models.CharField(max_length=50, choices=DimensionKind.choices, db_index=True)
+    external_id = models.CharField(max_length=255, db_index=True)  # ZONE name, node number, etc.
+    display_name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    geometry_geojson = models.JSONField(null=True, blank=True)
+    metadata_json = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        unique_together = [("dimension_kind", "external_id")]
+        indexes = [
+            models.Index(fields=["dimension_kind", "external_id"]),
+        ]
+
+    def __str__(self):
+        return f"{self.dimension_kind}:{self.external_id}"

@@ -23,6 +23,18 @@ export const routes: ModuleRoute[] = [
     path: `${base_route}/reports/:reportId`,
     load: () => import("./reports/report_detail"),
   },
+  {
+    path: `${base_route}/schedules`,
+    load: () => import("./schedules/schedule_list"),
+  },
+  {
+    path: `${base_route}/charts`,
+    load: () => import("./charts/chart-prototype"),
+  },
+  {
+    path: `${base_route}/timeseries`,
+    load: () => import("./timeseries/timeseries-explorer"),
+  },
 ];
 
 export const navItem: SidebarNavItem = {
@@ -44,6 +56,27 @@ export const navItem: SidebarNavItem = {
       path: `${base_route}/reports`,
       section: "module",
       order: 202,
+    },
+    {
+      id: "energy-hub-schedules",
+      title: "Schedules",
+      path: `${base_route}/schedules`,
+      section: "module",
+      order: 203,
+    },
+    {
+      id: "energy-hub-charts",
+      title: "Chart Prototype",
+      path: `${base_route}/charts`,
+      section: "module",
+      order: 204,
+    },
+    {
+      id: "energy-hub-timeseries",
+      title: "Timeseries Explorer",
+      path: `${base_route}/timeseries`,
+      section: "module",
+      order: 205,
     },
   ]
 };

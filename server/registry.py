@@ -8,4 +8,6 @@ MODULE_REGISTRATION = ModuleRegistration(
     app_config="server.apps.EnergyHubConfig",
     urls="server.urls",
     api_router="server.api_urls",
+    schedule_task="server.tasks.process_nyiso_report_schedules",
+    schedule_interval_seconds=60.0,
 )

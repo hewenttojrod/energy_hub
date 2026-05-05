@@ -2,11 +2,14 @@ import os
 from datetime import timedelta, timezone as dt_timezone
 from pathlib import Path
 from urllib.parse import urlparse
+import hashlib
 
 import requests
 from bs4 import BeautifulSoup, Comment
 from django.utils import timezone
 from core.src.util.requests_wrapper import delayed_get
+from core.models import source_file
+from .nyiso_models import nyiso_report, nyiso_report_file
 
 
 class NyisoPageHandler:
@@ -170,8 +173,8 @@ class NyisoPageHandler:
 
         return resolve_download_href(index_html, file_name_candidates)
 
-    def download_public_file(self, href_or_url: str, destination_file_name: str | None = None) -> dict[str, str]:
-        """Download a NYISO public file to local cache and return destination metadata."""
+    def download_public_file(self, href_or_url: str, destination_file_name: str | None = None, report_id: int | None = None) -> dict[str, object]:
+        """Download a NYISO public file to local cache, save to database, and return destination metadata."""
         normalized = (href_or_url or "").strip()
         if not normalized:
             raise ValueError("download href is required")
@@ -197,10 +200,54 @@ class NyisoPageHandler:
             headers={"User-Agent": self.user_agent},
         )
         response.raise_for_status()
-        destination_path.write_bytes(response.content)
+        file_content = response.content
+        destination_path.write_bytes(file_content)
+        
+        # Calculate SHA256 checksum for deduplication
+        checksum = hashlib.sha256(file_content).hexdigest()
+        
+        # Determine file type from extension
+        file_ext = Path(resolved_name).suffix.lower().lstrip(".")
+        file_type_map = {
+            "csv": "CSV",
+            "zip": "ZIP",
+            "pdf": "PDF",
+            "xlsx": "XLSX",
+            "xls": "XLS",
+            "json": "JSON",
+        }
+        file_type = file_type_map.get(file_ext, file_ext.upper() if file_ext else "UNKNOWN")
+        
+        # Create or get source_file record
+        src_file, created = source_file.objects.get_or_create(
+            checksum_sha256=checksum,
+            defaults={
+                "source_system": "nyiso",
+                "source_url": download_url,
+                "source_file_name": resolved_name,
+                "storage_path": str(destination_path),
+                "file_type": file_type,
+            }
+        )
+        
+        # Create bridge record if report_id provided
+        if report_id:
+            try:
+                report_obj = nyiso_report.objects.get(nyiso_report_id=report_id)
+                nyiso_report_file.objects.get_or_create(
+                    nyiso_report=report_obj,
+                    source_file=src_file,
+                )
+            except nyiso_report.DoesNotExist:
+                pass  # Report doesn't exist, skip bridge creation
 
         return {
             "url": download_url,
             "file_name": resolved_name,
             "local_path": str(destination_path),
+            "source_file_id": src_file.source_file_id,
+            "checksum": checksum,
+            "file_type": file_type,
+            "size_bytes": len(file_content),
+            "created": created,
         }
