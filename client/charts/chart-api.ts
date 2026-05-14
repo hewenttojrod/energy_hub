@@ -6,6 +6,10 @@
  *  - timeseries query       →  /api/core/charts/timeseries/
  */
 import { fetchWithRetry } from "@/utils/api-fetch";
+import { parseJsonResponse } from "@/utils/api-json";
+import type { ColumnMappingOption } from "@app-types/api";
+
+export type { ColumnMappingOption };
 
 export const CHART_BASE = "/api/core/charts";
 
@@ -57,17 +61,6 @@ export type ChartConfig = {
   style_overrides?: Record<string, unknown>;
 };
 
-export type ColumnMappingOption = {
-  column_mapping_id: number;
-  source_system: string;
-  dataset_key: string;
-  raw_column: string;
-  semantic_key: string;
-  column_label: string;
-  unit_name: string | null;
-  base_data_type: string | null;
-};
-
 export type DimensionOption = {
   dimension_type: string;
   dimension_key: string;
@@ -87,14 +80,9 @@ export type TimeseriesPoint = {
 // Chart definition CRUD
 // ---------------------------------------------------------------------------
 
-async function parseJson<T>(res: Response): Promise<T> {
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return (await res.json()) as T;
-}
-
 export async function listChartDefinitions(): Promise<ChartDefinition[]> {
   const res = await fetchWithRetry(`${CHART_BASE}/definitions/`);
-  return parseJson(res);
+  return parseJsonResponse(res);
 }
 
 export async function saveChartDefinition(
@@ -105,7 +93,7 @@ export async function saveChartDefinition(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  return parseJson(res);
+  return parseJsonResponse(res);
 }
 
 export async function updateChartDefinition(
@@ -117,12 +105,12 @@ export async function updateChartDefinition(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  return parseJson(res);
+  return parseJsonResponse(res);
 }
 
 export async function deleteChartDefinition(id: number): Promise<void> {
   const res = await fetchWithRetry(`${CHART_BASE}/definitions/${id}/`, { method: "DELETE" });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  await parseJsonResponse<void>(res);
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +125,7 @@ export async function listColumnMappings(
   if (sourceSystem) params.set("source_system", sourceSystem);
   if (datasetKey) params.set("dataset_key", datasetKey);
   const res = await fetchWithRetry(`${CHART_BASE}/column-mappings/?${params.toString()}`);
-  return parseJson(res);
+  return parseJsonResponse(res);
 }
 
 export async function listDimensions(
@@ -148,7 +136,7 @@ export async function listDimensions(
   if (sourceSystem) params.set("source_system", sourceSystem);
   if (datasetKey) params.set("dataset_key", datasetKey);
   const res = await fetchWithRetry(`${CHART_BASE}/dimensions/?${params.toString()}`);
-  return parseJson(res);
+  return parseJsonResponse(res);
 }
 
 // ---------------------------------------------------------------------------
@@ -178,5 +166,5 @@ export async function queryTimeseries(
     if (v !== undefined && v !== null && v !== "") q.set(k, String(v));
   });
   const res = await fetchWithRetry(`${CHART_BASE}/timeseries/?${q.toString()}`);
-  return parseJson(res);
+  return parseJsonResponse(res);
 }

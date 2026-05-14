@@ -66,7 +66,7 @@ export const navItem: SidebarNavItem = {
     },
     {
       id: "energy-hub-charts",
-      title: "Chart Prototype",
+      title: "Chart Prototype (Beta)",
       path: `${base_route}/charts`,
       section: "module",
       order: 204,

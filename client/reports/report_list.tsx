@@ -1,8 +1,19 @@
+/**
+ * NYISO report listing page with background metadata refresh.
+ *
+ * On mount, kicks off a server-side metadata refresh (re-scans NYISO index pages for
+ * new/updated reports) and then polls every 5 seconds for finished reports. When the
+ * poll detects finished IDs, it fetches only those rows and merges them into the grid
+ * via `rowPatches` — avoiding a full reload of all rows.
+ *
+ * `isMountedRef` guards all async callbacks so that state is never updated after
+ * the component unmounts (e.g. the user navigates away while polling is running).
+ */
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { ColumnDef } from "@app-types/api";
-import DataGrid from "@templates/data-grid";
-import FormBody from "@templates/form-body";
+import GridScreen from "@templates/grid-screen";
+import { formatNullableTimestamp } from "@/utils/display-format";
 
 import {
   fetchNyisoReportRowsByIds,
@@ -75,6 +86,9 @@ export default function NyisoReportList() {
     }
   };
 
+  // Bootstrap: start background metadata refresh and begin polling.
+  // isMountedRef ensures that the setInterval callback does not write to state
+  // after the component unmounts. The interval is also cleared in cleanup.
   useEffect(() => {
     isMountedRef.current = true;
     void startBackgroundRefresh();
@@ -87,14 +101,6 @@ export default function NyisoReportList() {
       }
     };
   }, []);
-
-  const renderTimestamp = (value: string | null) => {
-    if (!value) {
-      return "-";
-    }
-    const timestamp = new Date(value);
-    return Number.isNaN(timestamp.getTime()) ? value : timestamp.toLocaleString();
-  };
 
   const columns: ColumnDef<NyisoReportRow>[] = useMemo(
     () => [
@@ -156,23 +162,23 @@ export default function NyisoReportList() {
       {
         key: "latest_report_stamp",
         label: "Latest Stamp",
-        render: (_value, row) => renderTimestamp(row.latest_report_stamp),
+        render: (_value, row) => formatNullableTimestamp(row.latest_report_stamp),
       },
       {
         key: "earliest_report_stamp",
         label: "Earliest Stamp",
-        render: (_value, row) => renderTimestamp(row.earliest_report_stamp),
+        render: (_value, row) => formatNullableTimestamp(row.earliest_report_stamp),
       },
       { key: "task_status", label: "Task Status", sortable: true },
       {
         key: "task_updated_at",
         label: "Task Updated",
-        render: (_value, row) => renderTimestamp(row.task_updated_at),
+        render: (_value, row) => formatNullableTimestamp(row.task_updated_at),
       },
       {
         key: "last_scanned_at",
         label: "Last Scanned",
-        render: (_value, row) => renderTimestamp(row.last_scanned_at),
+        render: (_value, row) => formatNullableTimestamp(row.last_scanned_at),
       },
       {
         key: "is_deprecated",
@@ -185,17 +191,14 @@ export default function NyisoReportList() {
   );
 
   return (
-    <FormBody
+    <GridScreen<NyisoReportRow>
       title="NYISO Reports"
       subtitle="All reports discovered from NYISO index data and stored in nyiso_report."
-    >
-      <DataGrid<NyisoReportRow>
-        columns={columns}
-        endpoint={NYISO_REPORT_LIST_ENDPOINT}
-        rowKey="nyiso_report_id"
-        rowPatches={rowPatches}
-        onRefresh={startBackgroundRefresh}
-      />
-    </FormBody>
+      columns={columns}
+      endpoint={NYISO_REPORT_LIST_ENDPOINT}
+      rowKey="nyiso_report_id"
+      rowPatches={rowPatches}
+      onRefresh={startBackgroundRefresh}
+    />
   );
 }

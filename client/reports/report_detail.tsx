@@ -1,7 +1,26 @@
+/**
+ * NYISO report detail page (route: /energy_hub/reports/:reportId).
+ *
+ * Loads the metadata row and file content for a single report identified by the
+ * `reportId` URL parameter. Also polls for task completion when the report's
+ * `task_status` is in an active state (QUEUED or RUNNING).
+ *
+ * Two key useEffect patterns are used:
+ *  1. Load on param change — re-fetches when `parsedId` changes (navigating between reports).
+ *  2. Polling effect — active only while `row.task_status` is in `ACTIVE_STATES`; the
+ *     interval is cleared and re-registered whenever the row or its status changes, ensuring
+ *     stale closures are never used.
+ */
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 
+import ErrorBanner from "@templates/error-banner";
 import FormBody from "@templates/form-body";
+import LoadingState from "@templates/loading-state";
+import SectionPanel from "@templates/section-panel";
+import SuccessBanner from "@templates/success-banner";
+import { formatNullableTimestamp } from "@/utils/display-format";
+import ReportContentPanel, { type ReportDetailContentPayload } from "./report-content-panel";
 
 import {
   fetchNyisoReportRowContent,
@@ -27,35 +46,6 @@ type NyisoReportRow = {
   last_scanned_at: string | null;
   is_deprecated: boolean;
 };
-
-type MatrixRow = {
-  date: string;
-  last_updated: string;
-  links: Record<string, string>;
-};
-
-type SingularRow = {
-  label: string;
-  url: string;
-};
-
-type InlineFeedRow = {
-  message_type: string;
-  time: string;
-  message: string;
-};
-
-type ReportDetailContentPayload = {
-  mode: "FILE_MATRIX" | "SINGULAR_FILES" | "INLINE_FEED";
-  file_types: string[];
-  rows: MatrixRow[] | SingularRow[] | InlineFeedRow[];
-  report_id: number;
-};
-
-const CONTENT_GRID_CONTAINER_CLASS =
-  "min-h-0 overflow-auto rounded-md border border-ui-border w-full";
-const CONTENT_GRID_HEADER_CELL_CLASS =
-  "sticky top-0 z-10 bg-slate-50 px-4 py-2 dark:bg-slate-800";
 
 const ACTIVE_STATES = new Set(["QUEUED", "RUNNING"]);
 
@@ -105,11 +95,17 @@ export default function NyisoReportDetail() {
     }
   };
 
+  // Load the report row (and its content) whenever the parsed route ID changes.
+  // Validates the ID before fetching to show a user-facing error for invalid routes.
   useEffect(() => {
     void loadRow();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [parsedId]);
 
+  // Poll every 5 seconds while this report's task is still active (QUEUED or RUNNING).
+  // The effect re-runs whenever `row.nyiso_report_id` or `row.task_status` changes, so
+  // the interval is always scoped to the current row state. `mounted` prevents stale
+  // state updates if the component unmounts or the dependencies change before a tick fires.
   useEffect(() => {
     if (!row || !ACTIVE_STATES.has(row.task_status)) {
       return;
@@ -166,14 +162,6 @@ export default function NyisoReportDetail() {
       return [] as Array<{ label: string; value: string }>;
     }
 
-    const renderTimestamp = (value: string | null) => {
-      if (!value) {
-        return "-";
-      }
-      const timestamp = new Date(value);
-      return Number.isNaN(timestamp.getTime()) ? value : timestamp.toLocaleString();
-    };
-
     return [
       { label: "ID", value: String(row.nyiso_report_id) },
       { label: "Code", value: row.code },
@@ -184,10 +172,10 @@ export default function NyisoReportDetail() {
       { label: "File Name Format", value: row.file_name_format || "-" },
       { label: "Parse Status", value: row.parse_status },
       { label: "Task Status", value: row.task_status },
-      { label: "Task Updated", value: renderTimestamp(row.task_updated_at) },
-      { label: "Latest Stamp", value: renderTimestamp(row.latest_report_stamp) },
-      { label: "Earliest Stamp", value: renderTimestamp(row.earliest_report_stamp) },
-      { label: "Last Scanned", value: renderTimestamp(row.last_scanned_at) },
+      { label: "Task Updated", value: formatNullableTimestamp(row.task_updated_at) },
+      { label: "Latest Stamp", value: formatNullableTimestamp(row.latest_report_stamp) },
+      { label: "Earliest Stamp", value: formatNullableTimestamp(row.earliest_report_stamp) },
+      { label: "Last Scanned", value: formatNullableTimestamp(row.last_scanned_at) },
       { label: "Deprecated", value: row.is_deprecated ? "Yes" : "No" },
     ];
   }, [row]);
@@ -208,135 +196,55 @@ export default function NyisoReportDetail() {
         </a>
       </div>
 
-      {actionMessage && <div className="error-banner mb-4">{actionMessage}</div>}
+      {actionMessage && <SuccessBanner message={actionMessage} />}
 
-      {loading && <div className="body-text">Loading report row...</div>}
-      {error && <div className="error-banner">{error}</div>}
+      {loading && <LoadingState label="Loading report row..." />}
+      {error && <ErrorBanner message={error} onRetry={() => void loadRow()} />}
 
       {!loading && !error && row && (
         <>
-          <div className="overflow-x-auto rounded-md border border-ui-border">
-            <table className="w-full table-auto border-collapse text-sm">
-              <tbody>
-                {detailRows.map((entry) => (
-                  <tr key={entry.label} className="border-t border-slate-100 dark:border-slate-800">
-                    <th className="w-52 bg-slate-50 px-4 py-2 text-left font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-300">
-                      {entry.label}
-                    </th>
-                    <td className="px-4 py-2 text-slate-700 dark:text-slate-300">
-                      {entry.label === "Source Page" && row.source_page ? (
-                        <a
-                          className="hyperlink"
-                          href={`https://mis.nyiso.com/public/${row.source_page}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          {entry.value}
-                        </a>
-                      ) : (
-                        entry.value
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="mt-6 flex min-h-0 flex-1 flex-col">
-            <h3 className="mb-2 text-base font-semibold text-slate-800 dark:text-slate-200">Report Content</h3>
-
-            {contentLoading && <div className="body-text">Loading report content...</div>}
-            {contentError && <div className="error-banner mb-3">{contentError}</div>}
-
-            {!contentLoading && !contentError && content && content.mode === "INLINE_FEED" && (
-              <div className={CONTENT_GRID_CONTAINER_CLASS}>
-                <table className="w-full min-w-full table-auto border-collapse text-sm">
-                  <thead>
-                    <tr className="bg-slate-50 text-left dark:bg-slate-800">
-                      <th className={CONTENT_GRID_HEADER_CELL_CLASS}>Message Type</th>
-                      <th className={CONTENT_GRID_HEADER_CELL_CLASS}>Time</th>
-                      <th className={CONTENT_GRID_HEADER_CELL_CLASS}>Message</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(content.rows as InlineFeedRow[]).map((item, index) => (
-                      <tr key={`${item.time}-${index}`} className="border-t border-slate-100 dark:border-slate-800">
-                        <td className="px-4 py-2">{item.message_type || "-"}</td>
-                        <td className="px-4 py-2">{item.time || "-"}</td>
-                        <td className="px-4 py-2">{item.message || "-"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {!contentLoading && !contentError && content && content.mode === "SINGULAR_FILES" && (
-              <div className={CONTENT_GRID_CONTAINER_CLASS}>
-                <table className="w-full min-w-full table-auto border-collapse text-sm">
-                  <thead>
-                    <tr className="bg-slate-50 text-left dark:bg-slate-800">
-                      <th className={CONTENT_GRID_HEADER_CELL_CLASS}>File</th>
-                      <th className={CONTENT_GRID_HEADER_CELL_CLASS}>Download</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(content.rows as SingularRow[]).map((item) => (
-                      <tr key={item.url} className="border-t border-slate-100 dark:border-slate-800">
-                        <td className="px-4 py-2">{item.label || "-"}</td>
-                        <td className="px-4 py-2">
-                          <a className="hyperlink" href={item.url} target="_blank" rel="noopener noreferrer">
-                            Download
+          <SectionPanel title="Report Metadata">
+            <div className="detail-table-wrap">
+              <table className="detail-table">
+                <tbody>
+                  {detailRows.map((entry) => (
+                    <tr key={entry.label} className="detail-table__row">
+                      <th className="detail-table__header-cell">
+                        {entry.label}
+                      </th>
+                      <td className="detail-table__value-cell">
+                        {entry.label === "Source Page" && row.source_page ? (
+                          <a
+                            className="hyperlink"
+                            href={`https://mis.nyiso.com/public/${row.source_page}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            {entry.value}
                           </a>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {!contentLoading && !contentError && content && content.mode === "FILE_MATRIX" && (
-              <div className={CONTENT_GRID_CONTAINER_CLASS}>
-                <table className="w-full min-w-full table-auto border-collapse text-sm">
-                  <thead>
-                    <tr className="bg-slate-50 text-left dark:bg-slate-800">
-                      <th className={CONTENT_GRID_HEADER_CELL_CLASS}>Date</th>
-                      <th className={CONTENT_GRID_HEADER_CELL_CLASS}>Last Updated Time</th>
-                      {content.file_types.map((fileType) => (
-                        <th key={fileType} className={CONTENT_GRID_HEADER_CELL_CLASS}>
-                          {fileType}
-                        </th>
-                      ))}
+                        ) : (
+                          entry.value
+                        )}
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {(content.rows as MatrixRow[]).map((rowItem, index) => (
-                      <tr key={`${rowItem.date}-${index}`} className="border-t border-slate-100 dark:border-slate-800">
-                        <td className="px-4 py-2">{rowItem.date || "-"}</td>
-                        <td className="px-4 py-2">{rowItem.last_updated || "-"}</td>
-                        {content.file_types.map((fileType) => {
-                          const href = rowItem.links[fileType];
-                          return (
-                            <td key={fileType} className="px-4 py-2">
-                              {href ? (
-                                <a className="hyperlink" href={href} target="_blank" rel="noopener noreferrer">
-                                  Download
-                                </a>
-                              ) : (
-                                "-"
-                              )}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </SectionPanel>
+
+          <ReportContentPanel
+            content={content}
+            contentLoading={contentLoading}
+            contentError={contentError}
+            onRetry={() => {
+              if (row) {
+                void loadContent(row.nyiso_report_id);
+                return;
+              }
+              void loadRow();
+            }}
+          />
         </>
       )}
     </FormBody>

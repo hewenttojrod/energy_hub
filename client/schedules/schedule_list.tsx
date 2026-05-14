@@ -1,9 +1,17 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import EmptyState from "@templates/empty-state";
+import ErrorBanner from "@templates/error-banner";
+import FormBuilder from "@templates/form-builder";
 import FormBody from "@templates/form-body";
-import { FormFieldLabel } from "@templates/form-field-label";
+import LoadingState from "@templates/loading-state";
+import SectionPanel from "@templates/section-panel";
+import SuccessBanner from "@templates/success-banner";
+import { useFormEngine } from "@/hooks/use-form-engine";
 import { fetchWithRetry } from "@/utils/api-fetch";
+import { parseJsonResponse } from "@/utils/api-json";
+import { formatNullableTimestamp } from "@/utils/display-format";
 
 import { NYISO_REPORT_LIST_ENDPOINT } from "../reports/report-api";
 import {
@@ -16,10 +24,14 @@ import {
   toggleNyisoSchedule,
   updateNyisoSchedule,
   type NyisoSchedule,
-  type NyisoScheduleCreatePayload,
   type NyisoScheduleRun,
   type NyisoScheduleTestResponse,
 } from "./schedule-api";
+import {
+  createScheduleFormSchema,
+  mapScheduleToFormValues,
+} from "./schedule-form.schema";
+import ScheduleRunsTable from "./schedule-runs-table";
 
 type NyisoReportOption = {
   nyiso_report_id: number;
@@ -27,12 +39,35 @@ type NyisoReportOption = {
   name: string;
 };
 
-function parseTimestamp(value: string | null): string {
-  if (!value) {
-    return "-";
+function unwrapListPayload<T>(data: T[] | { items?: T[]; results?: T[] }): T[] {
+  if (Array.isArray(data)) {
+    return data;
   }
-  const dt = new Date(value);
-  return Number.isNaN(dt.getTime()) ? value : dt.toLocaleString();
+  return data.items ?? data.results ?? [];
+}
+
+function getPreviewCallClassName(foundOnPage: boolean | null | undefined) {
+  const classes = ["preview-panel__item"];
+
+  if (foundOnPage === true) {
+    classes.push("preview-panel__item--success");
+  } else if (foundOnPage === false) {
+    classes.push("preview-panel__item--danger");
+  } else {
+    classes.push("preview-panel__item--neutral");
+  }
+
+  return classes.join(" ");
+}
+
+function getScheduleRowClassName(isSelected: boolean) {
+  const classes = ["data-table__row", "data-table__row--interactive"];
+
+  if (isSelected) {
+    classes.push("data-table__row--selected");
+  }
+
+  return classes.join(" ");
 }
 
 export default function NyisoScheduleList() {
@@ -55,29 +90,38 @@ export default function NyisoScheduleList() {
   // Context menu
   const [menu, setMenu] = useState<{ x: number; y: number; schedule: NyisoSchedule } | null>(null);
 
-  const [name, setName] = useState("Daily Metadata Refresh");
-  const [mode, setMode] = useState<"METADATA_REFRESH" | "FILE_DOWNLOAD_RANGE">("METADATA_REFRESH");
-  const [reportId, setReportId] = useState<string>("");
-  const [intervalMinutes, setIntervalMinutes] = useState<number>(1440);
-  const [useCache, setUseCache] = useState(true);
-  const [runAsync, setRunAsync] = useState(true);
-  const [isActive, setIsActive] = useState(true);
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
-  const [rollingWindowDays, setRollingWindowDays] = useState<number | "">("");
-  const [templateValuesJson, setTemplateValuesJson] = useState('{"fileextension":"csv"}');
+  const reportOptions = useMemo(
+    () => reports.map((report) => ({
+      value: String(report.nyiso_report_id),
+      label: `${report.code} - ${report.name}`,
+    })),
+    [reports]
+  );
+
+  const formSchema = useMemo(() => createScheduleFormSchema(reportOptions), [reportOptions]);
+  const {
+    values: formValues,
+    errors: formErrors,
+    setFieldValue,
+    replaceValues,
+    clearErrors,
+    reset: resetForm,
+    validate: validateForm,
+    buildPayload,
+  } = useFormEngine(formSchema);
+
+  const fetchReports = async (): Promise<NyisoReportOption[]> => {
+    const response = await fetchWithRetry(NYISO_REPORT_LIST_ENDPOINT);
+    const payload = await parseJsonResponse<NyisoReportOption[] | { items?: NyisoReportOption[]; results?: NyisoReportOption[] }>(response);
+    return unwrapListPayload(payload);
+  };
 
   const refreshData = async () => {
     setLoading(true);
     try {
       const [scheduleRows, reportRows] = await Promise.all([
         listNyisoSchedules(),
-        fetchWithRetry(NYISO_REPORT_LIST_ENDPOINT).then(async (response) => {
-          if (!response.ok) {
-            throw new Error(`Reports request failed: ${response.status}`);
-          }
-          return (await response.json()) as NyisoReportOption[];
-        }),
+        fetchReports(),
       ]);
       setSchedules(scheduleRows);
       setReports(reportRows);
@@ -93,39 +137,20 @@ export default function NyisoScheduleList() {
     void refreshData();
   }, []);
 
-  const buildSchedulePayload = (): NyisoScheduleCreatePayload => {
-    let parsedTemplateValues: Record<string, string> = {};
-    if (templateValuesJson.trim()) {
-      const parsed = JSON.parse(templateValuesJson) as Record<string, unknown>;
-      parsedTemplateValues = Object.fromEntries(
-        Object.entries(parsed).map(([key, value]) => [String(key), String(value)])
-      );
+  const onTestSchedule = async () => {
+    if (!validateForm()) {
+      setError("Please correct highlighted form fields.");
+      return;
     }
 
-    return {
-      name: name.trim(),
-      mode,
-      report_id: reportId ? Number(reportId) : null,
-      is_active: isActive,
-      interval_minutes: Math.max(1, Number(intervalMinutes || 1)),
-      use_cache: useCache,
-      run_async: runAsync,
-      start_date: startDate || null,
-      end_date: endDate || null,
-      rolling_window_days:
-        rollingWindowDays === "" ? null : Math.max(1, Number(rollingWindowDays)),
-      template_values_json: parsedTemplateValues,
-    };
-  };
-
-  const onTestSchedule = async () => {
     setTesting(true);
     setMessage(null);
     setError(null);
     setTestResult(null);
+    clearErrors();
 
     try {
-      const payload = buildSchedulePayload();
+      const payload = buildPayload();
       const result = await testNyisoSchedule(payload);
       setTestResult(result);
       setMessage("Schedule test completed. No NYISO requests were made.");
@@ -137,12 +162,18 @@ export default function NyisoScheduleList() {
   };
 
   const onCreateSchedule = async () => {
+    if (!validateForm()) {
+      setError("Please correct highlighted form fields.");
+      return;
+    }
+
     setSaving(true);
     setMessage(null);
     setError(null);
+    clearErrors();
 
     try {
-      const payload = buildSchedulePayload();
+      const payload = buildPayload();
       await createNyisoSchedule(payload);
 
       setMessage("Schedule created.");
@@ -185,21 +216,7 @@ export default function NyisoScheduleList() {
 
   const onEditSchedule = (schedule: NyisoSchedule) => {
     setEditingScheduleId(schedule.nyiso_report_schedule_id);
-    setName(schedule.name);
-    setMode(schedule.mode);
-    setReportId(schedule.report_id !== null ? String(schedule.report_id) : "");
-    setIntervalMinutes(schedule.interval_minutes);
-    setUseCache(schedule.use_cache);
-    setRunAsync(schedule.run_async);
-    setIsActive(schedule.is_active);
-    setStartDate(schedule.start_date ?? "");
-    setEndDate(schedule.end_date ?? "");
-    setRollingWindowDays(schedule.rolling_window_days ?? "");
-    setTemplateValuesJson(
-      Object.keys(schedule.template_values_json).length > 0
-        ? JSON.stringify(schedule.template_values_json, null, 2)
-        : '{"fileextension":"csv"}'
-    );
+    replaceValues(mapScheduleToFormValues(schedule));
     setTestResult(null);
     setMessage(null);
     setError(null);
@@ -208,29 +225,26 @@ export default function NyisoScheduleList() {
 
   const onCancelEdit = () => {
     setEditingScheduleId(null);
-    setName("Daily Metadata Refresh");
-    setMode("METADATA_REFRESH");
-    setReportId("");
-    setIntervalMinutes(1440);
-    setUseCache(true);
-    setRunAsync(true);
-    setIsActive(true);
-    setStartDate("");
-    setEndDate("");
-    setRollingWindowDays("");
-    setTemplateValuesJson('{"fileextension":"csv"}');
+    resetForm();
     setTestResult(null);
     setMessage(null);
     setError(null);
+    clearErrors();
   };
 
   const onUpdateSchedule = async () => {
     if (editingScheduleId === null) return;
+    if (!validateForm()) {
+      setError("Please correct highlighted form fields.");
+      return;
+    }
+
     setSaving(true);
     setMessage(null);
     setError(null);
+    clearErrors();
     try {
-      const payload = buildSchedulePayload();
+      const payload = buildPayload();
       await updateNyisoSchedule(editingScheduleId, payload);
       setMessage("Schedule updated.");
       setTestResult(null);
@@ -302,145 +316,20 @@ export default function NyisoScheduleList() {
       title="NYISO Schedules"
       subtitle="Create and manage recurring metadata refresh and dataset download schedules."
     >
-      {message && <div className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm">{message}</div>}
-      {error && <div className="error-banner">{error}</div>}
+      {message && <SuccessBanner message={message} />}
+      {error && <ErrorBanner message={error} onRetry={() => void refreshData()} />}
 
-      <div className="rounded-md border border-ui-border p-4" ref={formRef}>
-        <h3 className="mb-3 text-base font-semibold">
-          {editingScheduleId !== null ? "Edit Schedule" : "Create Schedule"}
-        </h3>
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-          <label className="text-sm">
-            <FormFieldLabel
-              className="inline-flex items-center"
-              label="Name"
-              hintInfo="A descriptive label for this schedule."
-            />
-            <input className="form-input mt-1" value={name} onChange={(e) => setName(e.target.value)} />
-          </label>
+      <SectionPanel title={editingScheduleId !== null ? "Edit Schedule" : "Create Schedule"}>
+        <div ref={formRef}>
+          <FormBuilder
+            schema={formSchema}
+            values={formValues}
+            errors={formErrors}
+            disabled={saving || testing}
+            onChange={setFieldValue}
+          />
 
-          <label className="text-sm">
-            <FormFieldLabel
-              className="inline-flex items-center"
-              label="Mode"
-              hintInfo="Metadata Refresh updates report listings. File Download Range downloads data files for a date range."
-            />
-            <select
-              className="form-input mt-1"
-              value={mode}
-              onChange={(e) => setMode(e.target.value as "METADATA_REFRESH" | "FILE_DOWNLOAD_RANGE")}
-            >
-              <option value="METADATA_REFRESH">Metadata Refresh</option>
-              <option value="FILE_DOWNLOAD_RANGE">File Download Range</option>
-            </select>
-          </label>
-
-          <label className="text-sm">
-            <FormFieldLabel
-              className="inline-flex items-center"
-              label="Report"
-              hintInfo="Scope this schedule to a single report, or leave blank to apply to all reports."
-            />
-            <select className="form-input mt-1" value={reportId} onChange={(e) => setReportId(e.target.value)}>
-              <option value="">All Reports</option>
-              {reports.map((report) => (
-                <option key={report.nyiso_report_id} value={String(report.nyiso_report_id)}>
-                  {report.code} - {report.name}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="text-sm">
-            <FormFieldLabel
-              className="inline-flex items-center"
-              label="Interval Minutes"
-              hintInfo="How often this schedule runs. 1440 = daily, 60 = hourly."
-            />
-            <input
-              className="form-input mt-1"
-              type="number"
-              min={1}
-              value={intervalMinutes}
-              onChange={(e) => setIntervalMinutes(Number(e.target.value))}
-            />
-          </label>
-
-          <label className="text-sm">
-            <FormFieldLabel
-              className="inline-flex items-center"
-              label="Start Date"
-              hintInfo="Optional range start. Leave blank for open start (uses earliest available report date)."
-            />
-            <input className="form-input mt-1" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
-          </label>
-
-          <label className="text-sm">
-            <FormFieldLabel
-              className="inline-flex items-center"
-              label="End Date"
-              hintInfo="Optional range end. Leave blank for open end (uses today)."
-            />
-            <input className="form-input mt-1" type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
-          </label>
-
-          <label className="text-sm">
-            <FormFieldLabel
-              className="inline-flex items-center"
-              label="Rolling Window Days"
-              hintInfo="If set, downloads the last N days on each run, ignoring fixed start/end dates."
-            />
-            <input
-              className="form-input mt-1"
-              type="number"
-              min={1}
-              value={rollingWindowDays}
-              onChange={(e) => setRollingWindowDays(e.target.value ? Number(e.target.value) : "")}
-            />
-          </label>
-
-          <label className="text-sm md:col-span-2">
-            <FormFieldLabel
-              className="inline-flex items-center"
-              label="Template Values JSON"
-              hintInfo='Key/value pairs substituted into file URL templates, e.g. {"fileextension": "csv"}.'
-            />
-            <textarea
-              className="form-input mt-1 min-h-24"
-              value={templateValuesJson}
-              onChange={(e) => setTemplateValuesJson(e.target.value)}
-            />
-          </label>
-        </div>
-
-        <div className="mt-4 flex flex-wrap gap-4 text-sm">
-          <label className="inline-flex items-center gap-2">
-            <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
-            <FormFieldLabel
-              className="inline-flex items-center"
-              label="Active"
-              hintInfo="When enabled, the schedule will run automatically on the next interval tick."
-            />
-          </label>
-          <label className="inline-flex items-center gap-2">
-            <input type="checkbox" checked={useCache} onChange={(e) => setUseCache(e.target.checked)} />
-            <FormFieldLabel
-              className="inline-flex items-center"
-              label="Use Cache"
-              hintInfo="Skip downloading files that have already been stored in the database."
-            />
-          </label>
-          <label className="inline-flex items-center gap-2">
-            <input type="checkbox" checked={runAsync} onChange={(e) => setRunAsync(e.target.checked)} />
-            <FormFieldLabel
-              className="inline-flex items-center"
-              label="Run Async"
-              hintInfo="Dispatch the task as a background Celery job instead of running inline."
-            />
-          </label>
-        </div>
-
-        <div className="mt-4 flex gap-3">
+          <div className="action-row">
           {editingScheduleId !== null ? (
             <>
               <button type="button" className="btn-primary" disabled={saving} onClick={() => void onUpdateSchedule()}>
@@ -463,65 +352,67 @@ export default function NyisoScheduleList() {
           <button type="button" className="btn-secondary" disabled={loading} onClick={() => void refreshData()}>
             Reload
           </button>
-        </div>
-
-        {testResult && (
-          <div className="mt-4 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-700 dark:bg-slate-900">
-            <h4 className="font-semibold">Dry-run Preview</h4>
-            <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
-              {testResult.message} Mode: {testResult.resolved_mode}. Reports: {testResult.report_count}. Planned calls: {testResult.estimated_call_count}.
-            </p>
-            <div className="mt-2 max-h-56 overflow-auto rounded border border-slate-200 bg-white p-2 text-xs dark:border-slate-700 dark:bg-slate-800">
-                  {testResult.calls.length === 0 ? (
-                <p className="text-slate-500">No calls planned.</p>
-              ) : (
-                <ul className="space-y-2">
-                  {testResult.calls.map((call, idx) => (
-                    <li key={`${call.task_name}-${call.report_id ?? "none"}-${call.run_date ?? "none"}-${idx}`}
-                      className={`rounded border p-2 ${
-                        call.found_on_page === true
-                          ? "border-emerald-200 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950"
-                          : call.found_on_page === false
-                          ? "border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950"
-                          : "border-slate-100 dark:border-slate-700"
-                      }`}>
-                      <div className="font-medium">
-                        {call.report_code ?? "ALL"} | date: {call.run_date ?? "-"}{" "}
-                        {call.found_on_page === true && <span className="text-emerald-600 dark:text-emerald-400">(found)</span>}
-                        {call.found_on_page === false && <span className="text-red-600 dark:text-red-400">(not found)</span>}
-                      </div>
-                      {call.matched_href && (
-                        <div className="mt-0.5 break-all text-slate-500">{call.matched_href}</div>
-                      )}
-                      {call.resolved_url && (
-                        <div className="mt-0.5 break-all text-blue-600 dark:text-blue-400">{call.resolved_url}</div>
-                      )}
-                      {call.note && <div className="mt-0.5 text-slate-400">{call.note}</div>}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
           </div>
-        )}
-      </div>
 
-      <div className="rounded-md border border-ui-border p-4">
-        <h3 className="mb-3 text-base font-semibold">Existing Schedules</h3>
+          {testResult && (
+            <div className="preview-panel">
+              <h4 className="font-semibold">Dry-run Preview</h4>
+              <p className="preview-panel__meta">
+                {testResult.message} Mode: {testResult.resolved_mode}. Reports: {testResult.report_count}. Planned calls: {testResult.estimated_call_count}.
+              </p>
+              <div className="preview-panel__body">
+                {testResult.calls.length === 0 ? (
+                  <p className="preview-panel__empty">No calls planned.</p>
+                ) : (
+                  <ul className="preview-panel__list">
+                    {testResult.calls.map((call, idx) => (
+                      <li
+                        key={`${call.task_name}-${call.report_id ?? "none"}-${call.run_date ?? "none"}-${idx}`}
+                        className={getPreviewCallClassName(call.found_on_page)}
+                      >
+                        <div className="font-medium">
+                          {call.report_code ?? "ALL"} | date: {call.run_date ?? "-"}{" "}
+                          {call.found_on_page === true && (
+                            <span className="preview-panel__status--success">(found)</span>
+                          )}
+                          {call.found_on_page === false && (
+                            <span className="preview-panel__status--danger">(not found)</span>
+                          )}
+                        </div>
+                        {call.matched_href && (
+                          <div className="preview-panel__link">{call.matched_href}</div>
+                        )}
+                        {call.resolved_url && (
+                          <div className="preview-panel__link preview-panel__link--accent">
+                            {call.resolved_url}
+                          </div>
+                        )}
+                        {call.note && <div className="preview-panel__note">{call.note}</div>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </SectionPanel>
+
+      <SectionPanel title="Existing Schedules">
         {loading ? (
-          <p className="body-text">Loading schedules...</p>
+          <LoadingState label="Loading schedules..." />
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full table-auto border-collapse text-sm">
+          <div className="data-table-wrap">
+            <table className="data-table data-table--regular">
               <thead>
-                <tr className="bg-slate-50 text-left dark:bg-slate-800">
-                  <th className="px-3 py-2">Name</th>
-                  <th className="px-3 py-2">Mode</th>
-                  <th className="px-3 py-2">Report</th>
-                  <th className="px-3 py-2">Interval</th>
-                  <th className="px-3 py-2">State</th>
-                  <th className="px-3 py-2">Next Run</th>
-                  <th className="px-3 py-2">Last Run</th>
+                <tr className="data-table__head-row data-table__head-row--muted">
+                  <th className="data-table__cell">Name</th>
+                  <th className="data-table__cell">Mode</th>
+                  <th className="data-table__cell">Report</th>
+                  <th className="data-table__cell">Interval</th>
+                  <th className="data-table__cell">State</th>
+                  <th className="data-table__cell">Next Run</th>
+                  <th className="data-table__cell">Last Run</th>
                 </tr>
               </thead>
               <tbody>
@@ -530,82 +421,37 @@ export default function NyisoScheduleList() {
                   const runsExpanded = expandedRunsId === sid;
                   const runs = runsMap[sid];
                   return (
-                    <>
+                    <Fragment key={`row-${sid}`}>
                       <tr
-                        key={sid}
-                        className={`cursor-context-menu select-none border-t border-slate-100 dark:border-slate-800 ${editingScheduleId === sid ? "bg-blue-50 dark:bg-blue-950" : "hover:bg-slate-50 dark:hover:bg-slate-800/50"}`}
+                        className={getScheduleRowClassName(editingScheduleId === sid)}
                         onContextMenu={(e) => openMenu(e, schedule)}
                       >
-                        <td className="px-3 py-2">{schedule.name}</td>
-                        <td className="px-3 py-2">{schedule.mode}</td>
-                        <td className="px-3 py-2">{schedule.report_code ?? "ALL"}</td>
-                        <td className="px-3 py-2">{schedule.interval_minutes} min</td>
-                        <td className="px-3 py-2">{schedule.is_active ? schedule.last_state : "PAUSED"}</td>
-                        <td className="px-3 py-2">{schedule.is_active ? parseTimestamp(schedule.next_run_at) : "-"}</td>
-                        <td className="px-3 py-2">{parseTimestamp(schedule.last_run_at)}</td>
+                        <td className="data-table__cell">{schedule.name}</td>
+                        <td className="data-table__cell">{schedule.mode}</td>
+                        <td className="data-table__cell">{schedule.report_code ?? "ALL"}</td>
+                        <td className="data-table__cell">{schedule.interval_minutes} min</td>
+                        <td className="data-table__cell">{schedule.is_active ? schedule.last_state : "PAUSED"}</td>
+                        <td className="data-table__cell">{schedule.is_active ? formatNullableTimestamp(schedule.next_run_at) : "-"}</td>
+                        <td className="data-table__cell">{formatNullableTimestamp(schedule.last_run_at)}</td>
                       </tr>
                       {runsExpanded && (
-                        <tr key={`runs-${sid}`} className="border-t border-slate-100 dark:border-slate-800">
-                          <td colSpan={7} className="bg-slate-50 px-4 py-3 dark:bg-slate-900">
-                            {runsLoading && !runs ? (
-                              <p className="text-sm text-slate-500">Loading runs...</p>
-                            ) : !runs || runs.length === 0 ? (
-                              <p className="text-sm text-slate-500">No past runs recorded.</p>
-                            ) : (
-                              <div className="overflow-x-auto">
-                                <table className="w-full table-auto border-collapse text-xs">
-                                  <thead>
-                                    <tr className="bg-slate-100 text-left dark:bg-slate-800">
-                                      <th className="px-2 py-1">State</th>
-                                      <th className="px-2 py-1">Triggered By</th>
-                                      <th className="px-2 py-1">Started</th>
-                                      <th className="px-2 py-1">Finished</th>
-                                      <th className="px-2 py-1">Targeted</th>
-                                      <th className="px-2 py-1">Downloaded</th>
-                                      <th className="px-2 py-1">Completed</th>
-                                      <th className="px-2 py-1">Failed</th>
-                                      <th className="px-2 py-1">Message</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {runs.map((run) => (
-                                      <tr
-                                        key={run.schedule_run_id}
-                                        className={`border-t border-slate-100 dark:border-slate-700 ${
-                                          run.state_value === "FAILED"
-                                            ? "bg-red-50 dark:bg-red-950"
-                                            : run.state_value === "COMPLETED"
-                                            ? "bg-emerald-50 dark:bg-emerald-950"
-                                            : ""
-                                        }`}
-                                      >
-                                        <td className="px-2 py-1 font-medium">{run.state_value}</td>
-                                        <td className="px-2 py-1">{run.triggered_by}</td>
-                                        <td className="px-2 py-1">{parseTimestamp(run.started_at)}</td>
-                                        <td className="px-2 py-1">{parseTimestamp(run.finished_at)}</td>
-                                        <td className="px-2 py-1 text-center">{run.records_targeted}</td>
-                                        <td className="px-2 py-1 text-center">{run.files_downloaded}</td>
-                                        <td className="px-2 py-1 text-center">{run.completed_count}</td>
-                                        <td className="px-2 py-1 text-center">{run.failed_count}</td>
-                                        <td className="max-w-xs truncate px-2 py-1 text-slate-500" title={run.message}>
-                                          {run.message || "-"}
-                                        </td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            )}
+                        <tr key={`runs-${sid}`} className="data-table__row">
+                          <td colSpan={7} className="data-table__cell data-table__cell--detail">
+                            <ScheduleRunsTable
+                              runsLoading={runsLoading}
+                              runs={runs}
+                              parseTimestamp={formatNullableTimestamp}
+                            />
                           </td>
                         </tr>
                       )}
-                    </>
+                    </Fragment>
                   );
                 })}
                 {schedules.length === 0 && (
                   <tr>
-                    <td className="px-3 py-3 text-slate-500" colSpan={7}>
-                      No schedules defined.
+                    <td className="empty-state-cell" colSpan={7}>
+                      <EmptyState label="No schedules defined." />
                     </td>
                   </tr>
                 )}
@@ -613,39 +459,39 @@ export default function NyisoScheduleList() {
             </table>
           </div>
         )}
-      </div>
+      </SectionPanel>
 
       {menu && createPortal(
         <div
-          className="fixed min-w-52 rounded-md border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-700 dark:bg-slate-900"
+          className="context-menu"
           style={{ left: menu.x, top: menu.y, zIndex: 2000 }}
           role="menu"
           onPointerDown={(e) => e.stopPropagation()}
         >
           <button
             type="button" role="menuitem"
-            className="block w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
+            className="context-menu__item"
             onClick={() => { void onRunNow(menu.schedule); setMenu(null); }}
           >
             Run Now
           </button>
           <button
             type="button" role="menuitem"
-            className="block w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
+            className="context-menu__item"
             onClick={() => { void onToggleSchedule(menu.schedule); setMenu(null); }}
           >
             {menu.schedule.is_active ? "Pause" : "Resume"}
           </button>
           <button
             type="button" role="menuitem"
-            className="block w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
+            className="context-menu__item"
             onClick={() => { onEditSchedule(menu.schedule); setMenu(null); }}
           >
             Edit
           </button>
           <button
             type="button" role="menuitem"
-            className="block w-full px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
+            className="context-menu__item"
             onClick={() => { void onToggleRuns(menu.schedule); setMenu(null); }}
           >
             {expandedRunsId === menu.schedule.nyiso_report_schedule_id ? "Hide Runs" : "View Runs"}
@@ -653,7 +499,7 @@ export default function NyisoScheduleList() {
           <div className="my-1 border-t border-slate-100 dark:border-slate-700" />
           <button
             type="button" role="menuitem"
-            className="block w-full px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
+            className="context-menu__item text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
             onClick={() => { void onDeleteSchedule(menu.schedule); setMenu(null); }}
           >
             Delete

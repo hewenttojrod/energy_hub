@@ -1,183 +1,32 @@
+/**
+ * Timeseries point explorer page.
+ *
+ * Provides a filter bar (source system, dataset key, date range, row limit, column mapping
+ * checkboxes) that, when applied, passes query params to a `DataGrid` showing
+ * `timeseries_point` rows. Clicking a row opens `TimeseriesRawRecordModal` to inspect
+ * the originating CSV row.
+ *
+ * Column mappings are loaded from the API on mount (auto-all-selected) and can be
+ * reloaded manually after changing source system or dataset key. The "Apply" button
+ * propagates filter state into `appliedParams` which is the sole dependency driving
+ * the grid's data fetch.
+ */
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { ColumnDef } from "@app-types/api";
 import DataGrid from "@templates/data-grid";
 
 import {
   fetchColumnMappings,
-  fetchRawRecord,
   TIMESERIES_POINTS_ENDPOINT,
   type ColumnMappingOption,
-  type RawRecord,
   type TimeseriesPointRow,
 } from "./timeseries-api";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function formatValueJson(value_json: Record<string, unknown>): string {
-  const entries = Object.entries(value_json);
-  if (entries.length === 0) return "—";
-  if (entries.length === 1) {
-    const [k, v] = entries[0];
-    return `${k}: ${String(v)}`;
-  }
-  return entries
-    .slice(0, 3)
-    .map(([k, v]) => `${k}: ${String(v)}`)
-    .join("  |  ")
-    .concat(entries.length > 3 ? "  …" : "");
-}
-
-function formatTs(ts: string): string {
-  try {
-    return new Date(ts).toLocaleString();
-  } catch {
-    return ts;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Raw-record modal
-// ---------------------------------------------------------------------------
-
-type RawRecordModalProps = {
-  pointId: number;
-  onClose: () => void;
-};
-
-function RawRecordModal({ pointId, onClose }: RawRecordModalProps) {
-  const [record, setRecord] = useState<RawRecord | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setRecord(null);
-    setError(null);
-
-    fetchRawRecord(pointId)
-      .then((r) => {
-        if (!cancelled) setRecord(r);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load raw record.");
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [pointId]);
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick={onClose}
-    >
-      <div
-        className="relative w-full max-w-4xl mx-auto max-h-[85vh] overflow-y-auto rounded-lg border border-ui-border p-6 shadow-2xl bg-black"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <button
-          className="absolute right-4 top-4 text-sm font-medium text-muted hover:text-primary"
-          onClick={onClose}
-        >
-          ✕ Close
-        </button>
-
-        <h2 className="mb-4 text-lg font-semibold text-primary">Raw CSV Record</h2>
-
-        {!record && !error && (
-          <p className="mt-4 text-sm text-muted">Loading…</p>
-        )}
-
-        {error && (
-          <p className="mt-4 text-sm text-red-500">{error}</p>
-        )}
-
-        {record && (
-          <>
-            {/* Metadata section */}
-            <div className="mb-4 rounded border border-ui-border bg-ui-bg p-3">
-              <div className="grid grid-cols-2 gap-4 text-sm">
-                <div>
-                  <p className="text-xs font-medium text-muted">Record ID</p>
-                  <p className="font-mono text-primary">{record.raw_record_id}</p>
-                </div>
-                <div>
-                  <p className="text-xs font-medium text-muted">Row Number</p>
-                  <p className="font-mono text-primary">{record.row_number}</p>
-                </div>
-                <div>
-                  <p className="text-xs font-medium text-muted">Source File ID</p>
-                  <p className="font-mono text-primary">{record.source_file_id}</p>
-                </div>
-                <div>
-                  <p className="text-xs font-medium text-muted">Source File Name</p>
-                  <p className="font-mono text-xs text-primary break-all">{record.source_file_name}</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Raw fields section */}
-            <div>
-              <h3 className="mb-2 text-sm font-semibold text-primary">CSV Fields</h3>
-              <div className="overflow-x-auto rounded border border-ui-border">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-ui-border bg-ui-bg text-left text-xs font-medium text-muted">
-                      <th className="px-3 py-2 w-1/3">Field Name</th>
-                      <th className="px-3 py-2">Value</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Object.entries(record.row_payload_json).length === 0 ? (
-                      <tr>
-                        <td colSpan={2} className="px-3 py-2 text-center text-muted">
-                          (No fields)
-                        </td>
-                      </tr>
-                    ) : (
-                      Object.entries(record.row_payload_json).map(([k, v], idx) => (
-                        <tr
-                          key={k}
-                          className={`border-b border-ui-border/50 last:border-0 ${
-                            idx % 2 === 0 ? "bg-ui-surface" : "bg-ui-bg"
-                          }`}
-                        >
-                          <td className="px-3 py-2 font-mono text-xs font-medium text-muted">
-                            {k}
-                          </td>
-                          <td className="px-3 py-2 font-mono text-xs text-primary max-w-lg">
-                            {String(v ?? "—")}
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Main page
-// ---------------------------------------------------------------------------
-
-const COLUMNS: ColumnDef<TimeseriesPointRow>[] = [
-  { key: "ts_utc", label: "Timestamp (UTC)", width: "170px", sortable: true, render: (v) => formatTs(String(v)) },
-  { key: "column_label", label: "Column", width: "160px", sortable: true },
-  { key: "semantic_key", label: "Semantic Key", width: "140px", sortable: false },
-  { key: "unit_name", label: "Unit", width: "80px" },
-  { key: "value_json", label: "Values", render: (v) => formatValueJson(v as Record<string, unknown>) },
-  { key: "quality_flag", label: "Quality", width: "90px" },
-  { key: "source_file_name", label: "Source File", width: "220px", sortable: true },
-];
+import TimeseriesRawRecordModal from "./timeseries-raw-record-modal";
+import {
+  buildAppliedParams,
+  groupMappingsByDataset,
+  TIMESERIES_COLUMNS,
+} from "./timeseries-explorer.utils";
 
 export default function TimeseriesExplorer() {
   // --- filter state ---
@@ -219,6 +68,10 @@ export default function TimeseriesExplorer() {
     }
   };
 
+  // Load column mappings once on mount with the default source system.
+  // `isMountedRef` prevents stale state writes if the component unmounts during the async call.
+  // Subsequent reloads are triggered manually via `handleReloadMappings` (not a useEffect)
+  // so that the user controls when the filter is applied, avoiding race conditions.
   useEffect(() => {
     isMountedRef.current = true;
     void loadMappings(sourceSystem, datasetKey);
@@ -228,17 +81,16 @@ export default function TimeseriesExplorer() {
   }, []); // only on mount; user triggers reload via Apply
 
   const handleApply = () => {
-    const params: Record<string, string> = {};
-    if (selectedIds.size > 0) {
-      params.column_mapping_ids = [...selectedIds].join(",");
-    } else {
-      if (sourceSystem) params.source_system = sourceSystem;
-      if (datasetKey) params.dataset_key = datasetKey;
-    }
-    if (dateFrom) params.date_from = dateFrom;
-    if (dateTo) params.date_to = dateTo;
-    params.limit = limit || "500";
-    setAppliedParams(params);
+    setAppliedParams(
+      buildAppliedParams({
+        selectedIds,
+        sourceSystem,
+        datasetKey,
+        dateFrom,
+        dateTo,
+        limit,
+      })
+    );
   };
 
   const handleReloadMappings = () => {
@@ -269,13 +121,7 @@ export default function TimeseriesExplorer() {
   const gridParams = useMemo(() => appliedParams, [appliedParams]);
 
   // Group mappings by dataset_key for display
-  const mappingsByDataset = useMemo(() => {
-    const groups: Record<string, ColumnMappingOption[]> = {};
-    for (const m of mappings) {
-      (groups[m.dataset_key] ??= []).push(m);
-    }
-    return groups;
-  }, [mappings]);
+  const mappingsByDataset = useMemo(() => groupMappingsByDataset(mappings), [mappings]);
 
   return (
     <div className="flex h-full flex-col gap-4 p-4">
@@ -407,7 +253,7 @@ export default function TimeseriesExplorer() {
           </div>
         ) : (
           <DataGrid<TimeseriesPointRow>
-            columns={COLUMNS}
+            columns={TIMESERIES_COLUMNS}
             endpoint={TIMESERIES_POINTS_ENDPOINT}
             params={gridParams}
             rowKey="timeseries_point_id"
@@ -419,7 +265,7 @@ export default function TimeseriesExplorer() {
 
       {/* ── Raw record modal ───────────────────────────────────────────── */}
       {activePointId !== null && (
-        <RawRecordModal
+        <TimeseriesRawRecordModal
           pointId={activePointId}
           onClose={() => setActivePointId(null)}
         />

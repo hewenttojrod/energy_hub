@@ -87,11 +87,7 @@ class NyisoPageHandler:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
 
         if self._is_fresh(cache_path, cache_max_age=cache_max_age):
-            cached_html = cache_path.read_text(encoding="utf-8", errors="ignore")
-            sanitized_cached_html = self._remove_commented_html(cached_html)
-            if sanitized_cached_html != cached_html:
-                cache_path.write_text(sanitized_cached_html, encoding="utf-8")
-            return sanitized_cached_html
+            return cache_path.read_text(encoding="utf-8", errors="ignore")
 
         page_url = self.index_url.rstrip("/") + f"/{normalized_page}"
 
@@ -109,11 +105,7 @@ class NyisoPageHandler:
             return html
         except requests.RequestException:
             if cache_path.exists():
-                cached_html = cache_path.read_text(encoding="utf-8", errors="ignore")
-                sanitized_cached_html = self._remove_commented_html(cached_html)
-                if sanitized_cached_html != cached_html:
-                    cache_path.write_text(sanitized_cached_html, encoding="utf-8")
-                return sanitized_cached_html
+                return cache_path.read_text(encoding="utf-8", errors="ignore")
             raise
 
     def is_page_accessible(self, page: str, cache_max_age: timedelta | None = None) -> bool:
